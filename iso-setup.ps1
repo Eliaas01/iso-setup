@@ -1,4 +1,4 @@
-$host.UI.RawUI.WindowTitle = "MonSetup - Installation personnalisee"
+$host.UI.RawUI.WindowTitle = "SETUP"
 $host.UI.RawUI.BackgroundColor = "Black"
 $host.UI.RawUI.ForegroundColor = "White"
 
@@ -74,7 +74,6 @@ $catalog = @(
     @{ name = "Claude";              type = "winget"; id = "Anthropic.Claude";            cat = "Developpement" },
     @{ name = "Claude Code";         type = "winget"; id = "Anthropic.ClaudeCode";        cat = "Developpement" },
     @{ name = "Perplexity";          type = "winget"; id = "Perplexity.Comet";            cat = "Developpement" },
-    @{ name = "Windhawk";            type = "winget"; id = "RamenSoftware.Windhawk";      cat = "Developpement" },
     # Media
     @{ name = "VLC";                 type = "winget"; id = "VideoLAN.VLC";                cat = "Media" },
     @{ name = "Plex";                type = "winget"; id = "Plex.Plex";                   cat = "Media" },
@@ -86,6 +85,7 @@ $catalog = @(
     @{ name = "Microsoft Store";     type = "store";                                       cat = "Autres" },
     @{ name = "MAS Activation";      type = "mas";                                         cat = "Autres" },
     @{ name = "WinToys";             type = "winget"; id = "9P8LTPGCBZXD";                cat = "Autres" },
+    @{ name = "Windhawk";            type = "winget"; id = "RamenSoftware.Windhawk";      cat = "Autres" },
     @{ name = "WinHance";            type = "winhance";                                    cat = "Autres" },
     @{ name = "sep:WinHance";        type = "separator";                                   cat = "Autres" },
     @{ name = "Uninstall OneNote";   type = "uninstall"; uninstall = "onenote";           cat = "Autres" }
