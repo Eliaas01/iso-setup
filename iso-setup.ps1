@@ -13,10 +13,10 @@ $DESTR_SELECTED = "${ESC}[31m"
 $RESET          = "${ESC}[0m"
 
 $devices = @(
-    @{ name = "Zephyrus G16 RTX 4090";  folder = "zephyrus";  label = "ASUS ROG Zephyrus G16 2024 (RTX 4090 / Intel Core Ultra 9)" },
-    @{ name = "OmniBook X Flip";         folder = "omnibook";  label = "HP OmniBook X Flip"          },
-    @{ name = "Elias Desktop";           folder = "elidesk";   label = "PC fixe Elias"               },
-    @{ name = "Lilou Desktop";           folder = "lidesk";    label = "PC fixe Lilou"               }
+    @{ name = "Zephyrus 4090    [ zephyrus ]";  folder = "zephyrus";  label = "ASUS ROG Zephyrus G16 2024 (RTX 4090 / Intel Core Ultra 9)" },
+    @{ name = "OmniBook X Flip [ omnibook ]";         folder = "omnibook";  label = "HP OmniBook X Flip"          },
+    @{ name = "Elias Desktop [ elidesk ]";           folder = "elidesk";   label = "PC fixe Elias"               },
+    @{ name = "Lilou Desktop [ lidesk ]";           folder = "lidesk";    label = "PC fixe Lilou"               }
 )
 
 $catalog = @(
