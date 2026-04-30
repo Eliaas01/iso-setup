@@ -13,14 +13,14 @@ $DESTR_SELECTED = "${ESC}[31m"
 $RESET          = "${ESC}[0m"
 
 $devices = @(
-    @{ name = "ASUS ROG Zephyrus G16 2024 - RTX 4090"; folder = "Zephyrus_G16_2024"; label = "Laptop ASUS ROG Zephyrus G16 2024 (RTX 4090 / Intel Core Ultra 9)" },
-    @{ name = "Desktop Elias";   folder = "Desktop_Elias";   label = "PC fixe Elias"      },
-    @{ name = "Desktop Lilou";   folder = "Desktop_Lilou";   label = "PC fixe Lilou"      },
-    @{ name = "Laptop Lilou HP"; folder = "Laptop_Lilou_HP"; label = "Laptop HP de Lilou" }
+    @{ name = "Zephyrus G16 RTX 4090";  folder = "zephyrus";  label = "ASUS ROG Zephyrus G16 2024 (RTX 4090 / Intel Core Ultra 9)" },
+    @{ name = "OmniBook X Flip";         folder = "omnibook";  label = "HP OmniBook X Flip"          },
+    @{ name = "Elias Desktop";           folder = "elidesk";   label = "PC fixe Elias"               },
+    @{ name = "Lilou Desktop";           folder = "lidesk";    label = "PC fixe Lilou"               }
 )
 
 $catalog = @(
-    # ── Outils ───────────────────────────────────────────────
+    # Outils
     @{ name = "PowerToys";           type = "winget"; id = "Microsoft.PowerToys";         cat = "Outils" },
     @{ name = "Everything";          type = "winget"; id = "voidtools.Everything";        cat = "Outils" },
     @{ name = "7-Zip";               type = "winget"; id = "7zip.7zip";                   cat = "Outils" },
@@ -36,7 +36,7 @@ $catalog = @(
     @{ name = "FileZilla";           type = "winget"; id = "TimKosse.FileZilla.Client";   cat = "Outils" },
     @{ name = "UniGetUI";            type = "winget"; id = "MartiCliment.UniGetUI";       cat = "Outils" },
     @{ name = "Sejda PDF";           type = "winget"; id = "Sejda.PDFDesktop";            cat = "Outils" },
-    # ── Gaming ───────────────────────────────────────────────
+    # Gaming
     @{ name = "Steam";               type = "winget"; id = "Valve.Steam";                 cat = "Gaming" },
     @{ name = "Epic Games Launcher"; type = "winget"; id = "EpicGames.EpicGamesLauncher"; cat = "Gaming" },
     @{ name = "Minecraft Launcher";  type = "winget"; id = "Mojang.MinecraftLauncher";    cat = "Gaming" },
@@ -48,7 +48,7 @@ $catalog = @(
     @{ name = "SteelSeries GG";      type = "winget"; id = "SteelSeries.GG";              cat = "Gaming" },
     @{ name = "Razer Synapse";       type = "winget"; id = "Razer.RazerSynapse";          cat = "Gaming" },
     @{ name = "Signal RGB";          type = "winget"; id = "WhirlwindFX.SignalRgb";       cat = "Gaming" },
-    # ── Web & Cloud ──────────────────────────────────────────
+    # Web & Cloud
     @{ name = "Zen Browser";         type = "winget"; id = "Zen-Team.Zen-Browser";        cat = "Web & Cloud" },
     @{ name = "Google Chrome";       type = "winget"; id = "Google.Chrome";               cat = "Web & Cloud" },
     @{ name = "Firefox";             type = "winget"; id = "Mozilla.Firefox";             cat = "Web & Cloud" },
@@ -60,12 +60,12 @@ $catalog = @(
     @{ name = "Proton Mail";         type = "winget"; id = "Proton.ProtonMail";           cat = "Web & Cloud" },
     @{ name = "sep:Proton";          type = "separator";                                   cat = "Web & Cloud" },
     @{ name = "Uninstall OneDrive";  type = "uninstall"; uninstall = "onedrive";          cat = "Web & Cloud" },
-    # ── Social ───────────────────────────────────────────────
+    # Social
     @{ name = "Slack";               type = "winget"; id = "SlackTechnologies.Slack";     cat = "Social" },
     @{ name = "Discord";             type = "winget"; id = "Discord.Discord";             cat = "Social" },
     @{ name = "WhatsApp";            type = "winget"; id = "WhatsApp.WhatsApp";           cat = "Social" },
     @{ name = "Thunderbird";         type = "winget"; id = "Mozilla.Thunderbird";         cat = "Social" },
-    # ── Developpement ────────────────────────────────────────
+    # Developpement
     @{ name = "VS Code";             type = "winget"; id = "Microsoft.VisualStudioCode";  cat = "Developpement" },
     @{ name = "Zed";                 type = "winget"; id = "ZedIndustries.Zed";           cat = "Developpement" },
     @{ name = "Git";                 type = "winget"; id = "Git.Git";                     cat = "Developpement" },
@@ -75,13 +75,13 @@ $catalog = @(
     @{ name = "Claude Code";         type = "winget"; id = "Anthropic.ClaudeCode";        cat = "Developpement" },
     @{ name = "Perplexity";          type = "winget"; id = "Perplexity.Comet";            cat = "Developpement" },
     @{ name = "Windhawk";            type = "winget"; id = "RamenSoftware.Windhawk";      cat = "Developpement" },
-    # ── Media ────────────────────────────────────────────────
+    # Media
     @{ name = "VLC";                 type = "winget"; id = "VideoLAN.VLC";                cat = "Media" },
     @{ name = "Plex";                type = "winget"; id = "Plex.Plex";                   cat = "Media" },
     @{ name = "Stremio";             type = "winget"; id = "Stremio.Stremio";             cat = "Media" },
     @{ name = "qBittorrent";         type = "winget"; id = "qBittorrent.qBittorrent";     cat = "Media" },
     @{ name = "TypeWhisper";         type = "url";    url = "https://github.com/TypeWhisper/typewhisper-win/releases/download/v0.7.0/TypeWhisper-win-x64-Setup.exe"; cat = "Media" },
-    # ── Autres ───────────────────────────────────────────────
+    # Autres
     @{ name = "Office 2024 Home";    type = "url";    url = "https://c2rsetup.officeapps.live.com/c2r/download.aspx?ProductreleaseID=Home2024Retail&platform=x64&language=fr-fr&version=O16GA"; cat = "Autres" },
     @{ name = "Microsoft Store";     type = "store";                                       cat = "Autres" },
     @{ name = "MAS Activation";      type = "mas";                                         cat = "Autres" },
@@ -551,41 +551,39 @@ function Install-Drivers {
     Write-Step "Recherche de la cle USB..."
     Write-Host ""
 
-    $driversRoot = $null
+    # Cherche le dossier drvs/<folder> sur une cle USB
+    $driversPath = $null
     $drives = Get-PSDrive -PSProvider FileSystem | Where-Object { $_.Root -ne 'C:\' -and $_.Root -ne '' }
     foreach ($drive in $drives) {
-        $candidate = Join-Path $drive.Root 'Drivers'
-        if (Test-Path $candidate) { $driversRoot = $candidate; break }
+        $candidate = Join-Path $drive.Root "drvs\$($device.folder)"
+        if (Test-Path $candidate) { $driversPath = $candidate; break }
     }
 
-    if (-not $driversRoot) {
-        Write-Fail 'Dossier Drivers introuvable sur une cle USB.'
-        Write-Info 'Assurez-vous que la cle USB contient un dossier Drivers a la racine.'
-        Wait-Return; return
-    }
-
-    $driversPath = Join-Path $driversRoot $device.folder
-    if (-not (Test-Path $driversPath)) {
-        Write-Fail "Dossier introuvable : $driversPath"
-        Write-Info "Verifiez que '$($device.folder)' existe dans Drivers\ sur la cle USB."
+    if (-not $driversPath) {
+        Write-Fail "Dossier introuvable : drvs\$($device.folder) sur une cle USB."
+        Write-Info "Structure attendue : <CleUSB>\drvs\$($device.folder)\*.inf"
         Wait-Return; return
     }
 
     Write-Success "Dossier trouve : $driversPath"
     Write-Host ""
+
     $infFiles = Get-ChildItem -Path $driversPath -Filter '*.inf' -Recurse -ErrorAction SilentlyContinue
     Write-Info "Fichiers .inf detectes : $($infFiles.Count)"
     Write-Host ""
 
-    if ($infFiles.Count -eq 0) { Write-Fail 'Aucun fichier .inf trouve.'; Wait-Return; return }
+    if ($infFiles.Count -eq 0) {
+        Write-Fail "Aucun fichier .inf trouve dans $driversPath"
+        Wait-Return; return
+    }
 
-    Write-Step 'Installation via pnputil...'
+    Write-Step "Installation via pnputil..."
     Write-Host ""
     $result = pnputil.exe /add-driver "$driversPath\*.inf" /subdirs /install 2>&1
     foreach ($line in $result) {
-        if ($line -match 'Install|Ajout')          { Write-Success $line }
-        elseif ($line -match 'Failed|Echec|Error') { Write-Fail $line    }
-        elseif ($line.Trim() -ne '')               { Write-Info $line    }
+        if     ($line -match 'Install|Ajout')          { Write-Success $line }
+        elseif ($line -match 'Failed|Echec|Error')     { Write-Fail    $line }
+        elseif ($line.Trim() -ne '')                   { Write-Info    $line }
     }
 
     Write-Host ""
@@ -599,8 +597,8 @@ function Install-Drivers {
 
 function Show-Menu {
     Write-Header 'Menu principal'
-    Write-Host '  1  Installer les drivers          (depuis cle USB)'        -ForegroundColor White
-    Write-Host '  2  Installer des applications     (winget / Office / MAS)' -ForegroundColor White
+    Write-Host '  1  Installer les drivers          (depuis cle USB : drvs\<appareil>)' -ForegroundColor White
+    Write-Host '  2  Installer des applications     (winget / Office / MAS)'            -ForegroundColor White
     Write-Host '  Echap  Quitter' -ForegroundColor DarkGray
     Write-Host ""
     Write-Host "  $(Get-FullLine)" -ForegroundColor DarkGray
