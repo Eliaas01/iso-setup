@@ -1,3 +1,9 @@
+# Auto-elevation admin (fonctionne avec Run with PowerShell, double-clic, autounattend, etc.)
+if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    Start-Process powershell.exe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`"" -Verb RunAs
+    exit
+}
+
 $host.UI.RawUI.WindowTitle = "SETUP"
 $host.UI.RawUI.BackgroundColor = "Black"
 $host.UI.RawUI.ForegroundColor = "White"
@@ -13,10 +19,10 @@ $DESTR_SELECTED = "${ESC}[31m"
 $RESET          = "${ESC}[0m"
 
 $devices = @(
-    @{ name = "Zephyrus 4090    [ zephyrus ]";  folder = "zephyrus";  label = "ASUS ROG Zephyrus G16 2024 (RTX 4090 / Intel Core Ultra 9)" },
-    @{ name = "OmniBook X Flip  [ omnibook ]";         folder = "omnibook";  label = "HP OmniBook X Flip"          },
-    @{ name = "Elias Desktop    [ elidesk ]";           folder = "elidesk";   label = "PC fixe Elias"               },
-    @{ name = "Lilou Desktop    [ lidesk ]";           folder = "lidesk";    label = "PC fixe Lilou"               }
+    @{ name = "Zephyrus 4090    [ zephyrus ]"; folder = "zephyrus"; label = "ASUS ROG Zephyrus G16 2024 (RTX 4090 / Intel Core Ultra 9)" },
+    @{ name = "OmniBook X Flip  [ omnibook ]"; folder = "omnibook"; label = "HP OmniBook X Flip"   },
+    @{ name = "Elias Desktop    [ elidesk ]";  folder = "elidesk";  label = "PC fixe Elias"        },
+    @{ name = "Lilou Desktop    [ lidesk ]";   folder = "lidesk";   label = "PC fixe Lilou"        }
 )
 
 $catalog = @(
@@ -310,11 +316,11 @@ function Invoke-UninstallOneDrive {
     foreach ($p in $paths) {
         if (Test-Path $p) { Start-Process $p -ArgumentList "/uninstall" -Wait -ErrorAction SilentlyContinue; break }
     }
-    Remove-Item "$env:USERPROFILE\OneDrive"            -Recurse -Force -ErrorAction SilentlyContinue
-    Remove-Item "$env:LOCALAPPDATA\Microsoft\OneDrive" -Recurse -Force -ErrorAction SilentlyContinue
-    Remove-Item "$env:PROGRAMDATA\Microsoft OneDrive"  -Recurse -Force -ErrorAction SilentlyContinue
-    Remove-Item "HKCU:\Software\Microsoft\OneDrive"    -Recurse -Force -ErrorAction SilentlyContinue
-    Remove-Item "HKLM:\Software\Microsoft\OneDrive"    -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item "$env:USERPROFILE\OneDrive"             -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item "$env:LOCALAPPDATA\Microsoft\OneDrive"  -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item "$env:PROGRAMDATA\Microsoft OneDrive"   -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item "HKCU:\Software\Microsoft\OneDrive"     -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item "HKLM:\Software\Microsoft\OneDrive"     -Recurse -Force -ErrorAction SilentlyContinue
     Write-Success "OneDrive desinstalle"
     return "ok"
 }
@@ -341,6 +347,46 @@ function Invoke-UninstallOneNote {
     }
     Write-Success "OneNote desinstalle"
     return "ok"
+}
+
+# ── Installer un fichier EXE ou MSI silencieusement ──────────
+#
+# Switches silencieux :
+#   .msi  -> msiexec /i ... /qn /norestart
+#   .exe  -> /s /S /silent /quiet /norestart
+#
+# Codes de sortie OK : 0, 3010 (reboot needed), 1641 (reboot initiated)
+
+function Invoke-SilentInstaller {
+    param(
+        [string]$FilePath,
+        [string]$Label
+    )
+
+    $ext = [System.IO.Path]::GetExtension($FilePath).ToLower()
+
+    try {
+        if ($ext -eq ".msi") {
+            $proc = Start-Process "msiexec.exe" `
+                -ArgumentList @("/i", "`"$FilePath`"", "/qn", "/norestart") `
+                -Wait -PassThru -ErrorAction Stop
+        } else {
+            $proc = Start-Process -FilePath "`"$FilePath`"" `
+                -ArgumentList @("/s", "/S", "/silent", "/quiet", "/norestart", "-s", "-noreboot") `
+                -Wait -PassThru -ErrorAction Stop
+        }
+
+        if ($proc.ExitCode -in @(0, 3010, 1641)) {
+            Write-Success "    OK  $Label  (exit $($proc.ExitCode))"
+            return $true
+        } else {
+            Write-Fail "    FAIL  $Label  (exit $($proc.ExitCode))"
+            return $false
+        }
+    } catch {
+        Write-Fail "    ERREUR  $Label : $_"
+        return $false
+    }
 }
 
 # ── Install dispatcher ───────────────────────────────────────
@@ -511,6 +557,15 @@ function Install-Packages {
 }
 
 # ── Drivers ──────────────────────────────────────────────────
+#
+# Structure attendue sur la cle USB :
+#
+#   <USB>:\SETUP\drvs\<device>\EXE\1\   -> tous les .exe/.msi de ce paquet (en ordre)
+#   <USB>:\SETUP\drvs\<device>\EXE\2\   -> idem, paquet suivant
+#   <USB>:\SETUP\drvs\<device>\INF\     -> drivers .inf exportes via pnputil
+#
+# Extensions reconnues : .exe  .msi
+# Les .inf dans EXE\ sont ignores (reserves au dossier INF\).
 
 function Install-Drivers {
     Write-Header "Installation des drivers"
@@ -548,64 +603,527 @@ function Install-Drivers {
     if ($confirm -eq 'ESC' -or $confirm -match '^[Nn]$') { return }
     Write-Host $confirm
     Write-Host ""
-    Write-Step "Recherche de la cle USB..."
+
+    Write-Step "Recherche de la cle USB (SETUP\drvs\$($device.folder))..."
     Write-Host ""
 
-    # Cherche le dossier drvs/<folder> sur une cle USB
-    $driversPath = $null
+    $devicePath = $null
     $drives = Get-PSDrive -PSProvider FileSystem | Where-Object { $_.Root -ne 'C:\' -and $_.Root -ne '' }
     foreach ($drive in $drives) {
-        $candidate = Join-Path $drive.Root "drvs\$($device.folder)"
-        if (Test-Path $candidate) { $driversPath = $candidate; break }
+        $candidate = Join-Path $drive.Root "SETUP\drvs\$($device.folder)"
+        if (Test-Path $candidate) { $devicePath = $candidate; break }
     }
 
-    if (-not $driversPath) {
-        Write-Fail "Dossier introuvable : drvs\$($device.folder) sur une cle USB."
-        Write-Info "Structure attendue : <CleUSB>\drvs\$($device.folder)\*.inf"
-        Wait-Return; return
+    if (-not $devicePath) {
+        Write-Fail "Dossier introuvable : SETUP\drvs\$($device.folder) sur une cle USB."
+        Write-Info "Structure attendue  : <USB>:\SETUP\drvs\$($device.folder)\EXE\ et \INF\"
+        Write-Host ""
+        Write-Host "  Appuyez sur une touche pour revenir..." -ForegroundColor DarkGray
+        Wait-Return
+        return
     }
 
-    Write-Success "Dossier trouve : $driversPath"
+    Write-Success "Dossier trouve : $devicePath"
     Write-Host ""
 
-    $infFiles = Get-ChildItem -Path $driversPath -Filter '*.inf' -Recurse -ErrorAction SilentlyContinue
-    Write-Info "Fichiers .inf detectes : $($infFiles.Count)"
-    Write-Host ""
+    $totalOk   = 0
+    $totalFail = 0
 
-    if ($infFiles.Count -eq 0) {
-        Write-Fail "Aucun fichier .inf trouve dans $driversPath"
-        Wait-Return; return
+    # ── ETAPE 1 : Installateurs EXE/MSI dans l'ordre numerique ─
+    $exeRootPath = Join-Path $devicePath "EXE"
+
+    if (Test-Path $exeRootPath) {
+
+        $numFolders = Get-ChildItem -Path $exeRootPath -Directory |
+                      Where-Object  { $_.Name -match '^\d+$' } |
+                      Sort-Object   { [int]$_.Name }
+
+        if ($numFolders.Count -gt 0) {
+
+            Write-Step "ETAPE 1/2 - Drivers EXE/MSI  ($($numFolders.Count) paquet(s))"
+            Write-Host ""
+
+            foreach ($folder in $numFolders) {
+
+                $installers = Get-ChildItem -Path $folder.FullName -File -ErrorAction SilentlyContinue |
+                              Where-Object { $_.Extension -in @('.exe', '.msi') } |
+                              Sort-Object  Name
+
+                if ($installers.Count -eq 0) {
+                    Write-Info "  [$($folder.Name)] Aucun installateur (.exe/.msi) - dossier ignore."
+                    Write-Host ""
+                    continue
+                }
+
+                Write-Host "  [$($folder.Name)]  $($installers.Count) fichier(s)" -ForegroundColor White
+
+                foreach ($installer in $installers) {
+                    Write-Step "    -> $($installer.Name)"
+                    $ok = Invoke-SilentInstaller -FilePath $installer.FullName -Label $installer.Name
+                    if ($ok) { $totalOk++ } else { $totalFail++ }
+                }
+
+                Write-Host ""
+            }
+
+        } else {
+            Write-Info "Dossier EXE\ present mais aucun sous-dossier numerique - etape ignoree."
+            Write-Host ""
+        }
+
+    } else {
+        Write-Info "Pas de dossier EXE\ - etape EXE/MSI ignoree."
+        Write-Host ""
     }
 
-    Write-Step "Installation via pnputil..."
-    Write-Host ""
-    $result = pnputil.exe /add-driver "$driversPath\*.inf" /subdirs /install 2>&1
-    foreach ($line in $result) {
-        if     ($line -match 'Install|Ajout')          { Write-Success $line }
-        elseif ($line -match 'Failed|Echec|Error')     { Write-Fail    $line }
-        elseif ($line.Trim() -ne '')                   { Write-Info    $line }
+    # ── ETAPE 2 : Drivers INF via pnputil ─────────────────────
+    $infPath = Join-Path $devicePath "INF"
+
+    if (Test-Path $infPath) {
+
+        $infFiles = Get-ChildItem -Path $infPath -Filter "*.inf" -Recurse -ErrorAction SilentlyContinue
+
+        if ($infFiles.Count -gt 0) {
+
+            Write-Step "ETAPE 2/2 - Drivers INF via pnputil  ($($infFiles.Count) fichier(s))"
+            Write-Host ""
+
+            $result = pnputil.exe /add-driver "$infPath\*.inf" /subdirs /install 2>&1
+            foreach ($line in $result) {
+                if     ($line -match 'Install|Ajout')      { Write-Success $line; $totalOk++   }
+                elseif ($line -match 'Failed|Echec|Error') { Write-Fail    $line; $totalFail++ }
+                elseif ($line.Trim() -ne '')               { Write-Info    $line               }
+            }
+
+        } else {
+            Write-Info "Dossier INF\ present mais aucun .inf trouve - etape ignoree."
+        }
+
+    } else {
+        Write-Info "Pas de dossier INF\ - etape INF ignoree."
     }
 
+    # ── Bilan ──────────────────────────────────────────────────
     Write-Host ""
-    Write-Success "Installation terminee pour : $($device.name)"
+    Write-Host "  $(Get-FullLine)" -ForegroundColor DarkGray
+    Write-Host ""
+    Write-Success "Installation terminee : $($device.name)"
+    Write-Success "Reussis  : $totalOk"
+    if ($totalFail -gt 0) { Write-Fail "Echoues  : $totalFail" }
+    Write-Info    "Un redemarrage peut etre necessaire pour finaliser certains drivers."
     Write-Host ""
     Write-Host "  Appuyez sur une touche pour revenir au menu principal..." -ForegroundColor DarkGray
     Wait-Return
 }
 
+
+# ── Mise à jour depuis GitHub ─────────────────────────────────
+
+function Update-Script {
+    Write-Header "Mise a jour depuis GitHub"
+
+    # ── CONFIGURE ICI ──────────────────────────────────────────
+    $githubRawUrl = "https://raw.githubusercontent.com/Eliaas01/iso-setup/main/iso-setup.ps1"
+    # ───────────────────────────────────────────────────────────
+
+    Write-Info "URL source : $githubRawUrl"
+    Write-Host ""
+    Write-Step "Connexion a GitHub..."
+    Write-Host ""
+
+    try {
+        $remoteContent = Invoke-WebRequest -Uri $githubRawUrl -UseBasicParsing -ErrorAction Stop
+
+        if ($remoteContent.StatusCode -ne 200) {
+            Write-Fail "Erreur HTTP : $($remoteContent.StatusCode)"
+            Write-Host ""
+            Write-Host "  Appuyez sur une touche pour revenir..." -ForegroundColor DarkGray
+            Wait-Return
+            return
+        }
+
+        $remoteText = $remoteContent.Content
+
+        $selfPath = $PSCommandPath
+        if (-not $selfPath) { $selfPath = $MyInvocation.ScriptName }
+
+        if (-not $selfPath -or -not (Test-Path $selfPath)) {
+            Write-Fail "Impossible de determiner le chemin du script actuel."
+            Write-Info "Lance le script avec : powershell.exe -File <chemin>"
+            Write-Host ""
+            Write-Host "  Appuyez sur une touche pour revenir..." -ForegroundColor DarkGray
+            Wait-Return
+            return
+        }
+
+        Write-Success "Script local localise : $selfPath"
+        Write-Host ""
+
+        $localText   = Get-Content -LiteralPath $selfPath -Raw -Encoding UTF8
+        $localLines  = ($localText  -split "`n").Count
+        $remoteLines = ($remoteText -split "`n").Count
+
+        Write-Info "Version locale   : $localLines lignes"
+        Write-Info "Version distante : $remoteLines lignes"
+        Write-Host ""
+
+        if ($localText.Trim() -eq $remoteText.Trim()) {
+            Write-Success "Le script est deja a jour !"
+            Write-Host ""
+            Write-Host "  Appuyez sur une touche pour revenir..." -ForegroundColor DarkGray
+            Wait-Return
+            return
+        }
+
+        Write-Host "  Une mise a jour est disponible." -ForegroundColor Yellow
+        Write-Host ""
+        Write-Host "  Remplacer le script actuel ? O / N / Echap : " -ForegroundColor White -NoNewline
+
+        $confirm = Read-KeyChoice @('O','o','N','n') -AllowEscape
+        if ($confirm -eq 'ESC' -or $confirm -match '^[Nn]$') {
+            Write-Host $confirm
+            Write-Host ""
+            Write-Info "Mise a jour annulee."
+            Write-Host ""
+            Write-Host "  Appuyez sur une touche pour revenir..." -ForegroundColor DarkGray
+            Wait-Return
+            return
+        }
+        Write-Host $confirm
+        Write-Host ""
+
+        $backupPath = $selfPath -replace '\.ps1$', "_backup_$(Get-Date -Format 'yyyyMMdd_HHmmss').ps1"
+        Copy-Item -LiteralPath $selfPath -Destination $backupPath -Force
+        Write-Info "Sauvegarde creee : $backupPath"
+        Write-Host ""
+
+        [System.IO.File]::WriteAllText($selfPath, $remoteText, [System.Text.Encoding]::UTF8)
+
+        Write-Success "Script mis a jour avec succes !"
+        Write-Host ""
+        Write-Host "  $(Get-FullLine)" -ForegroundColor DarkGray
+        Write-Host ""
+        Write-Host "  Le script va se relancer automatiquement..." -ForegroundColor Yellow
+        Write-Host ""
+        Start-Sleep -Seconds 2
+
+        Start-Process powershell.exe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$selfPath`"" -Verb RunAs
+        exit
+
+    } catch {
+        Write-Fail "Erreur lors de la mise a jour : $_"
+        Write-Host ""
+        Write-Host "  Verifie ta connexion internet et que le depot GitHub est accessible." -ForegroundColor DarkGray
+        Write-Host ""
+        Write-Host "  Appuyez sur une touche pour revenir..." -ForegroundColor DarkGray
+        Wait-Return
+    }
+}
+
+
+
+
+# =========================================================================
+# WINHANCEMENT - Optimisations registre
+# =========================================================================
+
+function Invoke-WinHancement {
+    Clear-Host
+    Write-Host "`n=== WINHANCEMENT : Optimisations registre ===" -ForegroundColor Cyan
+
+    function Set-Reg {
+        param([string]$Path, [string]$Name, [string]$Type, $Value, [string]$Desc)
+        try {
+            if (-not (Test-Path $Path)) { New-Item -Path $Path -Force | Out-Null }
+            Set-ItemProperty -Path $Path -Name $Name -Value $Value -Type $Type -Force
+            Write-Host "[OK] $Desc" -ForegroundColor Green
+        } catch {
+            Write-Host "[ERR] $Desc : $($_.Exception.Message)" -ForegroundColor Red
+        }
+    }
+
+    function Remove-Reg {
+        param([string]$Path, [string]$Name, [string]$Desc)
+        try {
+            if (Test-Path $Path) {
+                Remove-ItemProperty -Path $Path -Name $Name -ErrorAction SilentlyContinue
+                Write-Host "[OK] Supprime : $Desc" -ForegroundColor Green
+            }
+        } catch {
+            Write-Host "[ERR] $Desc : $($_.Exception.Message)" -ForegroundColor Red
+        }
+    }
+
+    Write-Host "`n=== TELEMETRIE & CONFIDENTIALITE ===" -ForegroundColor Cyan
+
+    Set-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection" "AllowTelemetry" "DWord" 0 "Telemetrie desactivee"
+    Set-Reg "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\DataCollection" "AllowTelemetry" "DWord" 0 "Telemetrie (policies)"
+    Set-Reg "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\DataCollection" "MaxTelemetryAllowed" "DWord" 0 "Telemetrie max = 0"
+    Set-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection" "AITEnable" "DWord" 0 "AIT desactive"
+    Set-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Windows\CloudContent" "DisableTailoredExperiencesWithDiagnosticData" "DWord" 1 "Experiences personnalisees desactivees"
+    Set-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection" "DoNotShowFeedbackNotifications" "DWord" 1 "Notifications feedback desactivees"
+    Set-Reg "HKLM:\SOFTWARE\Policies\Microsoft\InputPersonalization" "AllowInputPersonalization" "DWord" 0 "Personnalisation saisie desactivee"
+    Set-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Windows\AppPrivacy" "LetAppsRunInBackground" "DWord" 2 "Apps background desactivees"
+    Set-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Windows\AppPrivacy" "LetAppsAccessAppDiagnostics" "DWord" 2 "Acces diagnostic apps desactive"
+    Set-Reg "HKLM:\SOFTWARE\Policies\Microsoft\SQMClient\Windows" "CEIPEnable" "DWord" 0 "CEIP desactive"
+    Set-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Error Reporting" "Disabled" "DWord" 1 "Error Reporting desactive"
+    Set-Reg "HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting" "Disabled" "DWord" 1 "Error Reporting (local)"
+    Set-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Search" "AllowCortana" "DWord" 0 "Cortana desactive"
+    Set-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Windows\CloudContent" "DisableWindowsConsumerFeatures" "DWord" 1 "App suggestions desactivees"
+    Set-Reg "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Device Metadata" "PreventDeviceMetadataFromNetwork" "DWord" 1 "Metadonnees peripherique reseau desactivees"
+    Set-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Windows\AdvertisingInfo" "DisabledByGroupPolicy" "DWord" 1 "Advertising ID desactive"
+    Set-Reg "HKLM:\SOFTWARE\Policies\Microsoft\OneDrive" "KFMBlockOptIn" "DWord" 1 "OneDrive KFM backup bloque"
+
+    Write-Host "`n=== PERFORMANCES SYSTEME ===" -ForegroundColor Cyan
+
+    Set-Reg "HKLM:\SYSTEM\CurrentControlSet\Control\PriorityControl" "Win32PrioritySeparation" "DWord" 2 "Priorite foreground apps"
+    Set-Reg "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile" "SystemResponsiveness" "DWord" 20 "Reactivite systeme multimedia"
+    Set-Reg "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile\Tasks\Games" "Priority" "DWord" 2 "Priorite CPU jeux"
+    Set-Reg "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile\Tasks\Games" "Scheduling Category" "String" "Medium" "Categorie scheduling jeux"
+    Set-Reg "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile\Tasks\Games" "GPU Priority" "DWord" 8 "Priorite GPU jeux"
+    Set-Reg "HKLM:\SYSTEM\CurrentControlSet\Control\GraphicsDrivers" "HwSchMode" "DWord" 2 "Hardware GPU Scheduling"
+    Set-Reg "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile" "NetworkThrottlingIndex" "DWord" 10 "Network Throttling Index"
+    Set-Reg "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\Serialize" "StartupDelayInMSec" "DWord" 0 "Startup delay supprime"
+    Set-Reg "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management\PrefetchParameters" "EnablePrefetcher" "DWord" 3 "Prefetcher active"
+    Set-Reg "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management\PrefetchParameters" "EnableSuperfetch" "DWord" 3 "Superfetch active"
+
+    Set-Reg "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Schedule\Maintenance" "MaintenanceDisabled" "DWord" 1 "Maintenance automatique desactivee"
+
+    Write-Host "`n=== WINDOWS UPDATE ===" -ForegroundColor Cyan
+
+    Set-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU" "NoAutoRebootWithLoggedOnUsers" "DWord" 1 "Pas de redemarrage auto avec user connecte"
+    Set-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate" "ExcludeWUDriversInQualityUpdate" "DWord" 1 "Drivers exclus des quality updates"
+    Set-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU" "AllowAutoWindowsUpdateDownloadOverMeteredNetwork" "DWord" 0 "Pas de MAJ sur reseau limite"
+    Set-Reg "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update" "AUOptions" "DWord" 2 "Notification MAJ seulement (pas auto)"
+    Set-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate" "IsContinuousInnovationOptedIn" "DWord" 0 "Continuous innovation optout"
+    Set-Reg "HKLM:\SOFTWARE\Policies\Microsoft\WindowsStore" "AutoDownload" "DWord" 2 "Store : telechargement auto desactive"
+
+    Write-Host "`n=== SECURITE ===" -ForegroundColor Cyan
+
+    Set-Reg "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" "ConsentPromptBehaviorAdmin" "DWord" 5 "UAC niveau normal conserve"
+    Set-Reg "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" "PromptOnSecureDesktop" "DWord" 1 "UAC secure desktop"
+    Set-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Windows\DeviceInstall\Settings" "PreventDeviceEncryption" "DWord" 1 "BitLocker auto bloque"
+    Set-Reg "HKLM:\SOFTWARE\Policies\Microsoft\MicrosoftAccount" "DisableUserAuth" "DWord" 0 "Compte Microsoft auth conserve"
+    Set-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WorkplaceJoin" "BlockAADWorkplaceJoin" "DWord" 1 "Popup Azure AD bloque"
+
+    Write-Host "`n=== INTERFACE & EXPLORER ===" -ForegroundColor Cyan
+
+    Set-Reg "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\Advanced" "HideFileExt" "DWord" 0 "Extensions fichiers visibles"
+    Set-Reg "HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem" "LongPathsEnabled" "DWord" 1 "Long Paths active"
+
+    $classicMenuPath = "HKLM:\SOFTWARE\Classes\CLSID\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}\InprocServer32"
+    if (-not (Test-Path $classicMenuPath)) {
+        New-Item -Path $classicMenuPath -Force | Out-Null
+        Set-ItemProperty -Path $classicMenuPath -Name "(Default)" -Value "" -Type String -Force
+        Write-Host "[OK] Menu contextuel Windows 10 active" -ForegroundColor Green
+    }
+
+    Set-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Windows\Explorer" "HideRecommendedSection" "DWord" 1 "Recommandations Start Menu masquees"
+    Set-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Search" "DisableSearchBoxSuggestions" "DWord" 1 "Suggestions recherche Bing desactivees"
+    Set-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Feeds" "AllowNewsAndInterests" "DWord" 0 "Widgets/News desactives"
+
+    Remove-Reg "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\Desktop\NameSpace\{e88865ea-0e1c-4e20-9aa6-edcd0212c87c}" "(Default)" "Dossier Gallery masque du panneau nav"
+    Remove-Reg "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\Desktop\NameSpace\{f874310e-b6b7-47dc-bc84-b9e6b38f5903}" "(Default)" "Dossier Home masque du panneau nav"
+
+    Set-Reg "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer" "link" "Binary" ([byte[]](0x00,0x00,0x00,0x00)) "Texte '- Raccourci' supprime"
+
+    Write-Host "`n=== ENERGIE ===" -ForegroundColor Cyan
+
+    Set-Reg "HKLM:\SYSTEM\CurrentControlSet\Control\Power" "HibernateEnabled" "DWord" 0 "Hibernation desactivee"
+    Set-Reg "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Power" "HiberbootEnabled" "DWord" 0 "Fast Startup desactive"
+    powercfg /hibernate off 2>$null
+    Write-Host "[OK] Hibernation desactivee via powercfg" -ForegroundColor Green
+
+    Write-Host "`n=== TACHES PLANIFIEES TELEMETRIE ===" -ForegroundColor Cyan
+
+    $tasksToDisable = @(
+        "\\Microsoft\\Windows\\Application Experience\\Microsoft Compatibility Appraiser",
+        "\\Microsoft\\Windows\\Application Experience\\ProgramDataUpdater",
+        "\\Microsoft\\Windows\\Customer Experience Improvement Program\\Consolidator",
+        "\\Microsoft\\Windows\\Customer Experience Improvement Program\\UsbCeip",
+        "\\Microsoft\\Windows\\DiskDiagnostic\\Microsoft-Windows-DiskDiagnosticDataCollector",
+        "\\Microsoft\\Windows\\Feedback\\Siuf\\DmClient",
+        "\\Microsoft\\Windows\\Feedback\\Siuf\\DmClientOnScenarioDownload",
+        "\\Microsoft\\Windows\\Windows Error Reporting\\QueueReporting",
+        "\\Microsoft\\Windows\\Application Experience\\MareBackup",
+        "\\Microsoft\\Windows\\Application Experience\\StartupAppTask",
+        "\\Microsoft\\Windows\\Maps\\MapsToastTask",
+        "\\Microsoft\\Windows\\Maps\\MapsUpdateTask",
+        "\\Microsoft\\Windows\\Power Efficiency Diagnostics\\AnalyzeSystem",
+        "\\Microsoft\\Windows\\Family Safety\\FamilySafetyMonitor"
+    )
+
+    foreach ($task in $tasksToDisable) {
+        try {
+            schtasks /Change /TN $task /Disable 2>$null | Out-Null
+            Write-Host "[OK] Tache desactivee : $task" -ForegroundColor Green
+        } catch {
+            Write-Host "[SKIP] Tache introuvable : $task" -ForegroundColor Yellow
+        }
+    }
+
+    Write-Host "`n=== SERVICES INUTILES ===" -ForegroundColor Cyan
+
+    $servicesToDisable = @(
+        @{ Name = "DiagTrack";          Start = 4; Desc = "Telemetrie DiagTrack" },
+        @{ Name = "dmwappushservice";   Start = 4; Desc = "WAP Push (telemetrie)" },
+        @{ Name = "WerSvc";             Start = 4; Desc = "Windows Error Reporting" },
+        @{ Name = "WSearch";            Start = 3; Desc = "Windows Search (manuel)" },
+        @{ Name = "Fax";                Start = 4; Desc = "Fax" },
+        @{ Name = "WMPNetworkSvc";      Start = 4; Desc = "WMP Network Sharing" },
+        @{ Name = "wisvc";              Start = 3; Desc = "Windows Insider" },
+        @{ Name = "RetailDemo";         Start = 3; Desc = "Retail Demo" },
+        @{ Name = "PhoneSvc";           Start = 3; Desc = "Phone Service" },
+        @{ Name = "ScDeviceEnum";       Start = 3; Desc = "Smart Card Enum" },
+        @{ Name = "SCPolicySvc";        Start = 3; Desc = "Smart Card Policy" },
+        @{ Name = "SCardSvr";           Start = 3; Desc = "Smart Card" },
+        @{ Name = "XblAuthManager";     Start = 3; Desc = "Xbox Auth" },
+        @{ Name = "XblGameSave";        Start = 3; Desc = "Xbox Game Save" },
+        @{ Name = "XboxNetApiSvc";      Start = 3; Desc = "Xbox Network" },
+        @{ Name = "WpcMonSvc";          Start = 3; Desc = "Parental Controls" },
+        @{ Name = "SEMgrSvc";           Start = 3; Desc = "NFC Payment" },
+        @{ Name = "RasAuto";            Start = 3; Desc = "RAS AutoDial" },
+        @{ Name = "MapsBroker";         Start = 3; Desc = "Maps Broker" },
+        @{ Name = "SharedAccess";       Start = 3; Desc = "ICS (partage connexion)" }
+    )
+
+    foreach ($svc in $servicesToDisable) {
+        $regPath = "HKLM:\SYSTEM\CurrentControlSet\Services\$($svc.Name)"
+        if (Test-Path $regPath) {
+            Set-Reg $regPath "Start" "DWord" $svc.Start "Service $($svc.Desc)"
+        } else {
+            Write-Host "[SKIP] Service introuvable : $($svc.Name)" -ForegroundColor Yellow
+        }
+    }
+
+    Write-Host "`n=== TERMINE ===" -ForegroundColor Green
+    Write-Host "Toutes les optimisations registre ont ete appliquees." -ForegroundColor Green
+    Write-Host ""
+    Write-Host "  Appuyez sur une touche pour revenir au menu principal..." -ForegroundColor DarkGray
+    Wait-Return
+}
+
+
+# ── Mise à jour depuis GitHub ─────────────────────────────────
+
+function Update-Script {
+    Write-Header "Mise a jour depuis GitHub"
+
+    # ── CONFIGURE ICI ──────────────────────────────────────────
+    $githubRawUrl = "https://raw.githubusercontent.com/Eliaas01/iso-setup/main/iso-setup.ps1"
+    # ───────────────────────────────────────────────────────────
+
+    Write-Info "URL source : $githubRawUrl"
+    Write-Host ""
+    Write-Step "Connexion a GitHub..."
+    Write-Host ""
+
+    try {
+        $remoteContent = Invoke-WebRequest -Uri $githubRawUrl -UseBasicParsing -ErrorAction Stop
+
+        if ($remoteContent.StatusCode -ne 200) {
+            Write-Fail "Erreur HTTP : $($remoteContent.StatusCode)"
+            Write-Host ""
+            Write-Host "  Appuyez sur une touche pour revenir..." -ForegroundColor DarkGray
+            Wait-Return
+            return
+        }
+
+        $remoteText = $remoteContent.Content
+
+        $selfPath = $PSCommandPath
+        if (-not $selfPath) { $selfPath = $MyInvocation.ScriptName }
+
+        if (-not $selfPath -or -not (Test-Path $selfPath)) {
+            Write-Fail "Impossible de determiner le chemin du script actuel."
+            Write-Info "Lance le script avec : powershell.exe -File <chemin>"
+            Write-Host ""
+            Write-Host "  Appuyez sur une touche pour revenir..." -ForegroundColor DarkGray
+            Wait-Return
+            return
+        }
+
+        Write-Success "Script local localise : $selfPath"
+        Write-Host ""
+
+        $localText   = Get-Content -LiteralPath $selfPath -Raw -Encoding UTF8
+        $localLines  = ($localText  -split "`n").Count
+        $remoteLines = ($remoteText -split "`n").Count
+
+        Write-Info "Version locale   : $localLines lignes"
+        Write-Info "Version distante : $remoteLines lignes"
+        Write-Host ""
+
+        if ($localText.Trim() -eq $remoteText.Trim()) {
+            Write-Success "Le script est deja a jour !"
+            Write-Host ""
+            Write-Host "  Appuyez sur une touche pour revenir..." -ForegroundColor DarkGray
+            Wait-Return
+            return
+        }
+
+        Write-Host "  Une mise a jour est disponible." -ForegroundColor Yellow
+        Write-Host ""
+        Write-Host "  Remplacer le script actuel ? O / N / Echap : " -ForegroundColor White -NoNewline
+
+        $confirm = Read-KeyChoice @('O','o','N','n') -AllowEscape
+        if ($confirm -eq 'ESC' -or $confirm -match '^[Nn]$') {
+            Write-Host $confirm
+            Write-Host ""
+            Write-Info "Mise a jour annulee."
+            Write-Host ""
+            Write-Host "  Appuyez sur une touche pour revenir..." -ForegroundColor DarkGray
+            Wait-Return
+            return
+        }
+        Write-Host $confirm
+        Write-Host ""
+
+        $backupPath = $selfPath -replace '\\.ps1$', "_backup_$(Get-Date -Format 'yyyyMMdd_HHmmss').ps1"
+        Copy-Item -LiteralPath $selfPath -Destination $backupPath -Force
+        Write-Info "Sauvegarde creee : $backupPath"
+        Write-Host ""
+
+        [System.IO.File]::WriteAllText($selfPath, $remoteText, [System.Text.Encoding]::UTF8)
+
+        Write-Success "Script mis a jour avec succes !"
+        Write-Host ""
+        Write-Host "  $(Get-FullLine)" -ForegroundColor DarkGray
+        Write-Host ""
+        Write-Host "  Le script va se relancer automatiquement..." -ForegroundColor Yellow
+        Write-Host ""
+        Start-Sleep -Seconds 2
+
+        Start-Process powershell.exe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$selfPath`"" -Verb RunAs
+        exit
+
+    } catch {
+        Write-Fail "Erreur lors de la mise a jour : $_"
+        Write-Host ""
+        Write-Host "  Verifie ta connexion internet et que le depot GitHub est accessible." -ForegroundColor DarkGray
+        Write-Host ""
+        Write-Host "  Appuyez sur une touche pour revenir..." -ForegroundColor DarkGray
+        Wait-Return
+    }
+}
+
+
 # ── Menu principal ────────────────────────────────────────────
 
 function Show-Menu {
-    Write-Header 'Menu principal'
-    Write-Host '  1  Installer les drivers          (depuis cle USB : drvs\<appareil>)' -ForegroundColor White
-    Write-Host '  2  Installer des applications     (winget / Office / MAS)'            -ForegroundColor White
-    Write-Host '  Echap  Quitter' -ForegroundColor DarkGray
+    Write-Header "Menu principal"
+    Write-Host "  1  Installer les drivers          (depuis cle USB : SETUP\drvs\<appareil>)" -ForegroundColor White
+    Write-Host "  2  Installer des applications     (winget / Office / MAS)"                   -ForegroundColor White
+    Write-Host "  3  Rechercher une mise a jour     (GitHub)"                                   -ForegroundColor Cyan
+    Write-Host "  4  Appliquer WinHancement         (optimisations registre)"                   -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host "  Echap  Quitter" -ForegroundColor DarkGray
     Write-Host ""
     Write-Host "  $(Get-FullLine)" -ForegroundColor DarkGray
     Write-Host ""
-    Write-Host '  Votre choix  1 / 2 / Echap : ' -ForegroundColor White -NoNewline
+    Write-Host "  Votre choix  1 / 2 / 3 / 4 / Echap : " -ForegroundColor White -NoNewline
 
-    $choice = Read-KeyChoice @('1','2') -AllowEscape
+    $choice = Read-KeyChoice @('1','2','3','4') -AllowEscape
     if ($choice -eq 'ESC') { return 'ESC' }
     Write-Host $choice
     return $choice
@@ -614,8 +1132,10 @@ function Show-Menu {
 do {
     $choice = Show-Menu
     switch ($choice) {
-        '1'   { Install-Drivers  }
-        '2'   { Install-Packages }
+        '1'   { Install-Drivers     }
+        '2'   { Install-Packages   }
+        '3'   { Update-Script      }
+        '4'   { Invoke-WinHancement }
         'ESC' { exit }
     }
 } while ($true)
