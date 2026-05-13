@@ -1,3 +1,13 @@
+powershell
+Write-Host "  1  Drivers & Plans d'alimentation  (depuis cle USB : SETUP\drvs\<appareil>)" -ForegroundColor White
+
+et le switch :
+
+powershell
+'1'   { Install-Drivers; Install-PowerPlans }
+
+Préparé avec Claude Sonnet 4.6 Thinking
+iso-setup
 # Auto-elevation admin (fonctionne avec Run with PowerShell, double-clic, autounattend, etc.)
 if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     Start-Process powershell.exe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`"" -Verb RunAs
@@ -1108,11 +1118,186 @@ function Update-Script {
 }
 
 
+
+# ── Plans d'alimentation ─────────────────────────────────────
+
+$SUB_PROCESSOR  = "54533251-82be-4824-96c1-47b60b740d00"
+$SUB_SLEEP      = "238c9fa8-0aad-41ed-83f4-97be242c8f20"
+$SUB_VIDEO      = "7516b95f-f776-4464-8c53-06167f40cc99"
+$SUB_DISK       = "0012ee47-9041-4b5d-9b77-535fba8b1144"
+$SUB_USB        = "2a737441-1930-4402-8d77-b2bebba308a3"
+$SUB_PCIE       = "501a4d13-42af-4429-9fd1-a8218c268e20"
+$SUB_WIRELESS   = "19caa586-e017-445c-aa8f-a5b7a1516fab"
+$SET_CPUMIN     = "893dee8e-2bef-41e0-89c6-b55d0929964c"
+$SET_CPUMAX     = "bc5038f7-23e0-4960-96da-33abaf5935ec"
+$SET_CPUBOOST   = "be337238-0d82-4146-a960-4f3749d470c7"
+$SET_STANDBY    = "29f6c1db-86da-48c5-9fdb-f2b67b1f44da"
+$SET_MONITOR    = "3c0bc021-c8a8-4e07-a973-6b14cbcb2b7e"
+$SET_DISKIDLE   = "6738e2c4-e8a5-4a42-b16a-e040e769756e"
+$SET_USBSUSP    = "48e6b7a6-50f5-4782-a5d4-53bb8f07e226"
+$SET_PCIELINK   = "ee12f906-d277-404b-b6da-e5fa1a576df5"
+$SET_WIFISAVE   = "12bbebe6-58d6-4636-95bb-3217ef867c1a"
+$GUID_BALANCED  = "381b4222-f694-41f0-9685-ff5bb260df2e"
+$GUID_HIGHPERF  = "8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c"
+$GUID_POWERSAVE = "a1841308-3541-4fab-bc81-f71556f20b4a"
+
+function New-PowerPlan {
+    param([string]$BaseGuid, [string]$Name, [string]$Desc)
+    $out  = powercfg /duplicatescheme $BaseGuid
+    $guid = ($out | Select-String -Pattern '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}').Matches[0].Value
+    powercfg /changename $guid $Name $Desc | Out-Null
+    return $guid
+}
+
+function Set-PlanValue {
+    param([string]$Guid,[string]$Sub,[string]$Set,$AC,$DC)
+    if ($null -ne $AC) { powercfg /setacvalueindex $Guid $Sub $Set $AC | Out-Null }
+    if ($null -ne $DC) { powercfg /setdcvalueindex $Guid $Sub $Set $DC | Out-Null }
+}
+
+function Remove-CustomPlans {
+    param([string[]]$Names)
+    $lines = powercfg /list
+    foreach ($line in $lines) {
+        foreach ($name in $Names) {
+            if ($line -match [regex]::Escape($name)) {
+                $g = ($line | Select-String -Pattern '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}').Matches[0].Value
+                powercfg /delete $g 2>$null | Out-Null
+            }
+        }
+    }
+}
+
+function Set-DesktopPlans {
+    param([string]$Tag)
+    Remove-CustomPlans @("$Tag - Turbo","$Tag - Daily","$Tag - Idle")
+
+    $t = New-PowerPlan $GUID_HIGHPERF  "$Tag - Turbo" "Performances absolues - gaming, rendu, VM"
+    Set-PlanValue $t $SUB_PROCESSOR $SET_CPUMIN   100  $null
+    Set-PlanValue $t $SUB_PROCESSOR $SET_CPUMAX   100  $null
+    Set-PlanValue $t $SUB_PROCESSOR $SET_CPUBOOST 2    $null
+    Set-PlanValue $t $SUB_SLEEP     $SET_STANDBY  0    $null
+    Set-PlanValue $t $SUB_VIDEO     $SET_MONITOR  0    $null
+    Set-PlanValue $t $SUB_DISK      $SET_DISKIDLE 0    $null
+    Set-PlanValue $t $SUB_USB       $SET_USBSUSP  0    $null
+    Set-PlanValue $t $SUB_PCIE      $SET_PCIELINK 0    $null
+    powercfg /hibernate off | Out-Null
+
+    $d = New-PowerPlan $GUID_BALANCED  "$Tag - Daily" "Usage quotidien - web, dev, bureautique"
+    Set-PlanValue $d $SUB_PROCESSOR $SET_CPUMIN   10   $null
+    Set-PlanValue $d $SUB_PROCESSOR $SET_CPUMAX   100  $null
+    Set-PlanValue $d $SUB_PROCESSOR $SET_CPUBOOST 1    $null
+    Set-PlanValue $d $SUB_SLEEP     $SET_STANDBY  0    $null
+    Set-PlanValue $d $SUB_VIDEO     $SET_MONITOR  1200 $null
+    Set-PlanValue $d $SUB_DISK      $SET_DISKIDLE 1800 $null
+    Set-PlanValue $d $SUB_USB       $SET_USBSUSP  1    $null
+    Set-PlanValue $d $SUB_PCIE      $SET_PCIELINK 1    $null
+
+    $i = New-PowerPlan $GUID_POWERSAVE "$Tag - Idle" "PC en fond - telechargements, serveur leger"
+    Set-PlanValue $i $SUB_PROCESSOR $SET_CPUMIN   0    $null
+    Set-PlanValue $i $SUB_PROCESSOR $SET_CPUMAX   60   $null
+    Set-PlanValue $i $SUB_PROCESSOR $SET_CPUBOOST 0    $null
+    Set-PlanValue $i $SUB_SLEEP     $SET_STANDBY  0    $null
+    Set-PlanValue $i $SUB_VIDEO     $SET_MONITOR  300  $null
+    Set-PlanValue $i $SUB_DISK      $SET_DISKIDLE 900  $null
+    Set-PlanValue $i $SUB_USB       $SET_USBSUSP  1    $null
+    Set-PlanValue $i $SUB_PCIE      $SET_PCIELINK 2    $null
+
+    powercfg /setactive $d | Out-Null
+    Write-Success "Plans alimentation crees pour $Tag  (actif par defaut : Daily)"
+}
+
+function Set-LaptopPlans {
+    param([string]$Tag)
+    Remove-CustomPlans @("$Tag - Perf","$Tag - Balanced","$Tag - Saver")
+
+    $p = New-PowerPlan $GUID_HIGHPERF  "$Tag - Perf" "Performances maximales - secteur"
+    Set-PlanValue $p $SUB_PROCESSOR $SET_CPUMIN   100  50
+    Set-PlanValue $p $SUB_PROCESSOR $SET_CPUMAX   100  100
+    Set-PlanValue $p $SUB_PROCESSOR $SET_CPUBOOST 2    2
+    Set-PlanValue $p $SUB_SLEEP     $SET_STANDBY  0    0
+    Set-PlanValue $p $SUB_VIDEO     $SET_MONITOR  0    0
+    Set-PlanValue $p $SUB_DISK      $SET_DISKIDLE 0    0
+    Set-PlanValue $p $SUB_USB       $SET_USBSUSP  0    0
+    Set-PlanValue $p $SUB_PCIE      $SET_PCIELINK 0    0
+
+    $b = New-PowerPlan $GUID_BALANCED  "$Tag - Balanced" "Usage quotidien - hybride AC/DC"
+    Set-PlanValue $b $SUB_PROCESSOR $SET_CPUMIN   10   5
+    Set-PlanValue $b $SUB_PROCESSOR $SET_CPUMAX   100  80
+    Set-PlanValue $b $SUB_PROCESSOR $SET_CPUBOOST 1    1
+    Set-PlanValue $b $SUB_SLEEP     $SET_STANDBY  1800 900
+    Set-PlanValue $b $SUB_VIDEO     $SET_MONITOR  600  300
+    Set-PlanValue $b $SUB_DISK      $SET_DISKIDLE 1200 600
+    Set-PlanValue $b $SUB_USB       $SET_USBSUSP  1    1
+    Set-PlanValue $b $SUB_PCIE      $SET_PCIELINK 1    1
+
+    $s = New-PowerPlan $GUID_POWERSAVE "$Tag - Saver" "Autonomie maximale - batterie critique"
+    Set-PlanValue $s $SUB_PROCESSOR $SET_CPUMIN   0    0
+    Set-PlanValue $s $SUB_PROCESSOR $SET_CPUMAX   40   40
+    Set-PlanValue $s $SUB_PROCESSOR $SET_CPUBOOST 0    0
+    Set-PlanValue $s $SUB_SLEEP     $SET_STANDBY  600  600
+    Set-PlanValue $s $SUB_VIDEO     $SET_MONITOR  180  180
+    Set-PlanValue $s $SUB_DISK      $SET_DISKIDLE 300  300
+    Set-PlanValue $s $SUB_USB       $SET_USBSUSP  1    1
+    Set-PlanValue $s $SUB_PCIE      $SET_PCIELINK 2    2
+    Set-PlanValue $s $SUB_WIRELESS  $SET_WIFISAVE 2    2
+
+    powercfg /setactive $b | Out-Null
+    Write-Success "Plans alimentation crees pour $Tag  (actif par defaut : Balanced)"
+}
+
+function Install-PowerPlans {
+    Write-Header "Plans d'alimentation"
+    Write-Host "  Quel appareil configurer ?" -ForegroundColor White
+    Write-Host ""
+
+    $valid = @()
+    for ($i = 0; $i -lt $devices.Count; $i++) {
+        $n = ($i + 1).ToString()
+        Write-Host "  $n   $($devices[$i].name)" -ForegroundColor White
+        $valid += $n
+    }
+
+    Write-Host ""
+    Write-Host "  $(Get-FullLine)" -ForegroundColor DarkGray
+    Write-Host ""
+    Write-Host "  Votre choix  1-$($devices.Count)  Echap : " -ForegroundColor White -NoNewline
+
+    $choice = Read-KeyChoice $valid -AllowEscape
+    if ($choice -eq 'ESC') { return }
+    Write-Host $choice
+    $device = $devices[[int]$choice - 1]
+
+    Write-Header "Plans d'alimentation : $($device.name)"
+    $laptopFolders = @("omnibook", "zephyrus")
+    $isLaptop      = $laptopFolders -contains $device.folder
+
+    Write-Host ""
+    if ($isLaptop) { Write-Info "Laptop detecte  ->  Perf / Balanced / Saver" }
+    else           { Write-Info "Desktop detecte ->  Turbo / Daily / Idle"    }
+    Write-Host ""
+    Write-Host "  Confirmer ? O / N / Echap : " -ForegroundColor White -NoNewline
+    $confirm = Read-KeyChoice @('O','o','N','n') -AllowEscape
+    if ($confirm -eq 'ESC' -or $confirm -match '^[Nn]$') { return }
+    Write-Host $confirm
+    Write-Host ""
+
+    if ($isLaptop) { Set-LaptopPlans  -Tag $device.folder.ToUpper() }
+    else           { Set-DesktopPlans -Tag $device.folder.ToUpper() }
+
+    Write-Host ""
+    Write-Host "  Plans actifs :" -ForegroundColor DarkGray
+    powercfg /list | ForEach-Object { Write-Info "  $_" }
+    Write-Host ""
+    Write-Host "  Appuyez sur une touche pour revenir au menu principal..." -ForegroundColor DarkGray
+    Wait-Return
+}
+
 # ── Menu principal ────────────────────────────────────────────
 
 function Show-Menu {
     Write-Header "Menu principal"
-    Write-Host "  1  Installer les drivers          (depuis cle USB : SETUP\drvs\<appareil>)" -ForegroundColor White
+    Write-Host "  1  Drivers & Plans d'alimentation  (depuis cle USB : SETUP\drvs\<appareil>)" -ForegroundColor White
     Write-Host "  2  Installer des applications     (winget / Office / MAS)"                   -ForegroundColor White
     Write-Host "  3  Rechercher une mise a jour     (GitHub)"                                   -ForegroundColor Cyan
     Write-Host "  4  Appliquer WinHancement         (optimisations registre)"                   -ForegroundColor Cyan
@@ -1132,7 +1317,7 @@ function Show-Menu {
 do {
     $choice = Show-Menu
     switch ($choice) {
-        '1'   { Install-Drivers     }
+        '1'   { Install-Drivers; Install-PowerPlans }
         '2'   { Install-Packages   }
         '3'   { Update-Script      }
         '4'   { Invoke-WinHancement }
