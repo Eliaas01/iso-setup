@@ -84,6 +84,8 @@ $catalog = @(
     @{ name = "VS Code";             type = "winget"; id = "Microsoft.VisualStudioCode";  cat = "Developpement" },
     @{ name = "Zed";                 type = "winget"; id = "ZedIndustries.Zed";           cat = "Developpement" },
     @{ name = "Git";                 type = "winget"; id = "Git.Git";                     cat = "Developpement" },
+    @{ name = "Node.js LTS";         type = "winget"; id = "OpenJS.NodeJS.LTS";           cat = "Developpement" },
+    @{ name = "Python";              type = "winget"; id = "Python.Python.3";             cat = "Developpement" },
     @{ name = "Termius";             type = "winget"; id = "Termius.Termius";             cat = "Developpement" },
     @{ name = "Framer";              type = "winget"; id = "Framer.Framer";               cat = "Developpement" },
     @{ name = "Claude";              type = "winget"; id = "Anthropic.Claude";            cat = "Developpement" },
