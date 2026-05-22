@@ -1,13 +1,3 @@
-powershell
-Write-Host "  1  Drivers & Plans d'alimentation  (depuis cle USB : SETUP\drvs\<appareil>)" -ForegroundColor White
-
-et le switch :
-
-powershell
-'1'   { Install-Drivers; Install-PowerPlans }
-
-Préparé avec Claude Sonnet 4.6 Thinking
-iso-setup
 # Auto-elevation admin (fonctionne avec Run with PowerShell, double-clic, autounattend, etc.)
 if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     Start-Process powershell.exe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`"" -Verb RunAs
@@ -19,6 +9,15 @@ $host.UI.RawUI.BackgroundColor = "Black"
 $host.UI.RawUI.ForegroundColor = "White"
 
 Clear-Host
+
+# ── Log setup ────────────────────────────────────────────────
+$_scriptRoot = Split-Path -Parent $PSCommandPath
+$_usbRoot    = Split-Path -Qualifier $_scriptRoot
+$_logFile    = Join-Path $_usbRoot "iso-setup_$(Get-Date -Format 'yyyyMMdd_HHmmss').txt"
+Start-Transcript -Path $_logFile -Append -NoClobber | Out-Null
+Write-Host "  [LOG] Session enregistree : $_logFile" -ForegroundColor DarkCyan
+Write-Host ""
+
 
 $ignoredVK = @(8,9,13,16,17,18,19,20,33,34,35,36,37,38,39,40,45,46,91,92,93,112,113,114,115,116,117,118,119,120,121,122,123,144,145)
 $lineChar   = [char]0x2550
@@ -570,12 +569,31 @@ function Install-Packages {
 #
 # Structure attendue sur la cle USB :
 #
-#   <USB>:\SETUP\drvs\<device>\EXE\1\   -> tous les .exe/.msi de ce paquet (en ordre)
-#   <USB>:\SETUP\drvs\<device>\EXE\2\   -> idem, paquet suivant
-#   <USB>:\SETUP\drvs\<device>\INF\     -> drivers .inf exportes via pnputil
+#   <USB>:\SETUP\drvs\<device>\EXE.zip  -> archive contenant les dossiers 1\, 2\, 3\...
+#   <USB>:\SETUP\drvs\<device>\INF.zip  -> archive contenant les drivers .inf
 #
-# Extensions reconnues : .exe  .msi
-# Les .inf dans EXE\ sont ignores (reserves au dossier INF\).
+# Structure de travail sur le PC :
+#
+#   C:\SETUP\DRIVERS\<device>\EXE.zip   -> copie locale de EXE.zip
+#   C:\SETUP\DRIVERS\<device>\INF.zip   -> copie locale de INF.zip
+#   C:\SETUP\DRIVERS\<device>\EXE\      -> extraction locale des installateurs
+#   C:\SETUP\DRIVERS\<device>\INF\      -> extraction locale des drivers INF
+#
+# Deroulement :
+#
+#   1. Recherche du dossier <USB>:\SETUP\drvs\<device> sur la cle USB
+#   2. Copie de EXE.zip et INF.zip vers C:\SETUP\DRIVERS\<device>
+#   3. Dezippage local de EXE.zip et INF.zip sur le disque
+#   4. Lancement de chaque EXE/MSI dans l'ordre (1, 2, 3...) depuis C:
+#   5. Message "Appuyez sur une touche" apres chaque lancement
+#   6. Import des drivers INF via pnputil depuis C:\SETUP\DRIVERS\<device>\INF
+#   7. Suppression des ZIP et dossiers extraits locaux
+#
+# Resultat :
+#
+#   - La cle USB reste propre et inchangee
+#   - Les installations se lancent depuis le disque local
+#   - Les performances et la fiabilite sont meilleures que depuis la cle USB
 
 function Install-Drivers {
     Write-Header "Installation des drivers"
@@ -621,43 +639,149 @@ function Install-Drivers {
     $drives = Get-PSDrive -PSProvider FileSystem | Where-Object { $_.Root -ne 'C:\' -and $_.Root -ne '' }
     foreach ($drive in $drives) {
         $candidate = Join-Path $drive.Root "SETUP\drvs\$($device.folder)"
-        if (Test-Path $candidate) { $devicePath = $candidate; break }
+        if (Test-Path $candidate) {
+            $devicePath = $candidate
+            break
+        }
     }
 
     if (-not $devicePath) {
         Write-Fail "Dossier introuvable : SETUP\drvs\$($device.folder) sur une cle USB."
-        Write-Info "Structure attendue  : <USB>:\SETUP\drvs\$($device.folder)\EXE\ et \INF\"
+        Write-Info "Structure attendue  : <USB>:\SETUP\drvs\$($device.folder)\EXE.zip et INF.zip"
         Write-Host ""
         Write-Host "  Appuyez sur une touche pour revenir..." -ForegroundColor DarkGray
         Wait-Return
         return
     }
 
-    Write-Success "Dossier trouve : $devicePath"
+    Write-Success "Dossier source trouve : $devicePath"
     Write-Host ""
 
     $totalOk   = 0
     $totalFail = 0
 
-    # ── ETAPE 1 : Installateurs EXE/MSI dans l'ordre numerique ─
-    $exeRootPath = Join-Path $devicePath "EXE"
+    # ── Source USB (lecture seule) ─────────────────────────────
+    $exeZipSrc = Join-Path $devicePath "EXE.zip"
+    $infZipSrc = Join-Path $devicePath "INF.zip"
 
+    # ── Cible locale sur C: ────────────────────────────────────
+    $localRoot   = Join-Path "C:\SETUP\DRIVERS" $device.folder
+    $exeZipLocal = Join-Path $localRoot "EXE.zip"
+    $infZipLocal = Join-Path $localRoot "INF.zip"
+    $exeRootPath = Join-Path $localRoot "EXE"
+    $infPath     = Join-Path $localRoot "INF"
+
+    Write-Step "Preparation du dossier local : $localRoot"
+    Write-Host ""
+    try {
+        New-Item -Path $localRoot -ItemType Directory -Force | Out-Null
+        Write-Success "  Dossier local pret."
+    } catch {
+        Write-Fail "  Impossible de creer le dossier local : $_"
+        Write-Host ""
+        Write-Host "  Appuyez sur une touche pour revenir..." -ForegroundColor DarkGray
+        Wait-Return
+        return
+    }
+
+    Write-Host ""
+    Write-Step "Copie des archives depuis la cle USB vers C:\SETUP\DRIVERS..."
+    Write-Host ""
+
+    if (Test-Path $exeZipSrc) {
+        try {
+            Copy-Item -LiteralPath $exeZipSrc -Destination $exeZipLocal -Force -ErrorAction Stop
+            Write-Success "  EXE.zip copie vers le disque local."
+        } catch {
+            Write-Fail "  Echec copie EXE.zip : $_"
+        }
+    } else {
+        Write-Fail "  EXE.zip introuvable sur la cle USB."
+    }
+
+    if (Test-Path $infZipSrc) {
+        try {
+            Copy-Item -LiteralPath $infZipSrc -Destination $infZipLocal -Force -ErrorAction Stop
+            Write-Success "  INF.zip copie vers le disque local."
+        } catch {
+            Write-Fail "  Echec copie INF.zip : $_"
+        }
+    } else {
+        Write-Fail "  INF.zip introuvable sur la cle USB."
+    }
+
+    Write-Host ""
+    Write-Step "Nettoyage des anciens dossiers extraits locaux..."
+    Write-Host ""
+
+    foreach ($folder in @($exeRootPath, $infPath)) {
+        if (Test-Path $folder) {
+            try {
+                Remove-Item -LiteralPath $folder -Recurse -Force -ErrorAction Stop
+                Write-Success "  Ancien dossier supprime : $folder"
+            } catch {
+                Write-Fail "  Impossible de supprimer $folder : $_"
+            }
+        }
+    }
+
+    Write-Host ""
+    Write-Step "Dezippage des archives locales..."
+    Write-Host ""
+
+    if (-not (Test-Path $exeZipLocal)) {
+        Write-Fail "EXE.zip absent localement - etape EXE/MSI impossible."
+    } else {
+        try {
+            New-Item -Path $exeRootPath -ItemType Directory -Force | Out-Null
+            Expand-Archive -LiteralPath $exeZipLocal -DestinationPath $exeRootPath -Force -ErrorAction Stop
+            Write-Success "  EXE.zip extrait dans $exeRootPath"
+        } catch {
+            Write-Fail "  Erreur extraction EXE.zip : $_"
+        }
+    }
+
+    if (-not (Test-Path $infZipLocal)) {
+        Write-Fail "INF.zip absent localement - etape INF impossible."
+    } else {
+        try {
+            New-Item -Path $infPath -ItemType Directory -Force | Out-Null
+            Expand-Archive -LiteralPath $infZipLocal -DestinationPath $infPath -Force -ErrorAction Stop
+            Write-Success "  INF.zip extrait dans $infPath"
+        } catch {
+            Write-Fail "  Erreur extraction INF.zip : $_"
+        }
+    }
+
+    Write-Host ""
+
+    # ── ETAPE 1/2 : EXE / MSI ─────────────────────────────────
     if (Test-Path $exeRootPath) {
-
-        $numFolders = Get-ChildItem -Path $exeRootPath -Directory |
-                      Where-Object  { $_.Name -match '^\d+$' } |
-                      Sort-Object   { [int]$_.Name }
+        $numFolders = Get-ChildItem -Path $exeRootPath -Directory -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -match '^\d+$' } |
+            Sort-Object { [int]$_.Name }
 
         if ($numFolders.Count -gt 0) {
+            $totalFiles = 0
+            foreach ($folder in $numFolders) {
+                $totalFiles += (
+                    Get-ChildItem -Path $folder.FullName -File -ErrorAction SilentlyContinue |
+                    Where-Object { $_.Extension.ToLower() -in @('.exe', '.msi') }
+                ).Count
+            }
 
-            Write-Step "ETAPE 1/2 - Drivers EXE/MSI  ($($numFolders.Count) paquet(s))"
+            Write-Step "ETAPE 1/2 - Drivers EXE/MSI  ($($numFolders.Count) dossier(s) / $totalFiles fichier(s))"
+            Write-Host ""
+            Write-Host "  Les installateurs vont se lancer un par un depuis C:\SETUP\DRIVERS." -ForegroundColor Yellow
+            Write-Host "  Apres chaque lancement, installe ou ferme la fenetre, puis reviens ici et appuie sur une touche." -ForegroundColor Yellow
+            Write-Host ""
+            Write-Host "  $(Get-FullLine)" -ForegroundColor DarkGray
             Write-Host ""
 
             foreach ($folder in $numFolders) {
-
                 $installers = Get-ChildItem -Path $folder.FullName -File -ErrorAction SilentlyContinue |
-                              Where-Object { $_.Extension -in @('.exe', '.msi') } |
-                              Sort-Object  Name
+                    Where-Object { $_.Extension.ToLower() -in @('.exe', '.msi') } |
+                    Sort-Object Name
 
                 if ($installers.Count -eq 0) {
                     Write-Info "  [$($folder.Name)] Aucun installateur (.exe/.msi) - dossier ignore."
@@ -665,62 +789,109 @@ function Install-Drivers {
                     continue
                 }
 
-                Write-Host "  [$($folder.Name)]  $($installers.Count) fichier(s)" -ForegroundColor White
+                Write-Host "  Dossier [$($folder.Name)]  -  $($installers.Count) fichier(s)" -ForegroundColor Cyan
+                Write-Host ""
 
                 foreach ($installer in $installers) {
-                    Write-Step "    -> $($installer.Name)"
-                    $ok = Invoke-SilentInstaller -FilePath $installer.FullName -Label $installer.Name
-                    if ($ok) { $totalOk++ } else { $totalFail++ }
+                    Write-Host ""
+                    Write-Host "  $($installer.Name)" -ForegroundColor White
+                    Write-Host "  Chemin : $($installer.FullName)" -ForegroundColor DarkGray
+                    Write-Host ""
+
+                    try {
+                        if ($installer.Extension.ToLower() -eq '.msi') {
+                            Start-Process "msiexec.exe" -ArgumentList @("/i", "`"$($installer.FullName)`"") | Out-Null
+                        } else {
+                            Start-Process -FilePath $installer.FullName | Out-Null
+                        }
+                        Write-Success "  Lancement effectue. Termine l'installation dans la fenetre ouverte."
+                    } catch {
+                        Write-Fail "  Erreur lancement : $_"
+                    }
+
+                    Write-Host ""
+                    Write-Host "  $(Get-FullLine)" -ForegroundColor DarkGray
+                    Write-Host ""
+                    Write-Host "  Appuyez sur une touche pour lancer le suivant..." -ForegroundColor DarkGray
+                    Wait-Return
                 }
 
                 Write-Host ""
             }
-
         } else {
-            Write-Info "Dossier EXE\ present mais aucun sous-dossier numerique - etape ignoree."
+            Write-Info "EXE.zip present mais aucun dossier numerique 1/2/3... n'a ete trouve apres extraction."
             Write-Host ""
         }
-
     } else {
-        Write-Info "Pas de dossier EXE\ - etape EXE/MSI ignoree."
+        Write-Info "EXE.zip absent ou extraction impossible."
         Write-Host ""
     }
 
-    # ── ETAPE 2 : Drivers INF via pnputil ─────────────────────
-    $infPath = Join-Path $devicePath "INF"
+    Write-Host ""
+    Write-Host "  $(Get-FullLine)" -ForegroundColor DarkGray
+    Write-Host ""
+    Write-Host "  Tous les EXE/MSI ont ete lances." -ForegroundColor Green
+    Write-Host "  Passage a l'etape 2 : import des drivers INF via pnputil." -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "  Appuyez sur une touche pour continuer..." -ForegroundColor DarkGray
+    Wait-Return
 
+    # ── ETAPE 2/2 : INF via pnputil ───────────────────────────
     if (Test-Path $infPath) {
-
         $infFiles = Get-ChildItem -Path $infPath -Filter "*.inf" -Recurse -ErrorAction SilentlyContinue
-
         if ($infFiles.Count -gt 0) {
-
             Write-Step "ETAPE 2/2 - Drivers INF via pnputil  ($($infFiles.Count) fichier(s))"
             Write-Host ""
-
             $result = pnputil.exe /add-driver "$infPath\*.inf" /subdirs /install 2>&1
             foreach ($line in $result) {
                 if     ($line -match 'Install|Ajout')      { Write-Success $line; $totalOk++   }
                 elseif ($line -match 'Failed|Echec|Error') { Write-Fail    $line; $totalFail++ }
                 elseif ($line.Trim() -ne '')               { Write-Info    $line               }
             }
-
         } else {
-            Write-Info "Dossier INF\ present mais aucun .inf trouve - etape ignoree."
+            Write-Info "INF.zip present mais aucun .inf n'a ete trouve apres extraction."
         }
-
     } else {
-        Write-Info "Pas de dossier INF\ - etape INF ignoree."
+        Write-Info "INF.zip absent ou extraction impossible."
     }
 
-    # ── Bilan ──────────────────────────────────────────────────
+    # ── Nettoyage local uniquement ─────────────────────────────
+    Write-Host ""
+    Write-Step "Nettoyage : suppression des dossiers et archives locales..."
+    Write-Host ""
+
+    foreach ($item in @($exeRootPath, $infPath, $exeZipLocal, $infZipLocal)) {
+        if (Test-Path $item) {
+            try {
+                Remove-Item -LiteralPath $item -Recurse -Force -ErrorAction Stop
+                Write-Success "  Supprime : $item"
+            } catch {
+                Write-Fail "  Impossible de supprimer $item : $_"
+            }
+        }
+    }
+
+    try {
+        if (Test-Path $localRoot) {
+            $remaining = Get-ChildItem -LiteralPath $localRoot -Force -ErrorAction SilentlyContinue
+            if (-not $remaining) {
+                Remove-Item -LiteralPath $localRoot -Force -ErrorAction SilentlyContinue
+                Write-Success "  Dossier racine local supprime : $localRoot"
+            }
+        }
+    } catch {
+        Write-Fail "  Nettoyage final incomplet : $_"
+    }
+
+    Write-Host ""
+    Write-Info "La cle USB n'a pas ete modifiee : seuls les ZIP sources ont ete lus."
     Write-Host ""
     Write-Host "  $(Get-FullLine)" -ForegroundColor DarkGray
     Write-Host ""
     Write-Success "Installation terminee : $($device.name)"
     Write-Success "Reussis  : $totalOk"
     if ($totalFail -gt 0) { Write-Fail "Echoues  : $totalFail" }
-    Write-Info    "Un redemarrage peut etre necessaire pour finaliser certains drivers."
+    Write-Info "Un redemarrage peut etre necessaire pour finaliser certains drivers."
     Write-Host ""
     Write-Host "  Appuyez sur une touche pour revenir au menu principal..." -ForegroundColor DarkGray
     Wait-Return
@@ -1314,13 +1485,20 @@ function Show-Menu {
     return $choice
 }
 
-do {
-    $choice = Show-Menu
-    switch ($choice) {
-        '1'   { Install-Drivers; Install-PowerPlans }
-        '2'   { Install-Packages   }
-        '3'   { Update-Script      }
-        '4'   { Invoke-WinHancement }
-        'ESC' { exit }
-    }
-} while ($true)
+try {
+    do {
+        $choice = Show-Menu
+        switch ($choice) {
+            '1'   { Install-Drivers; Install-PowerPlans }
+            '2'   { Install-Packages   }
+            '3'   { Update-Script      }
+            '4'   { Invoke-WinHancement }
+            'ESC' { break }
+        }
+    } while ($choice -ne 'ESC')
+} finally {
+    Write-Host ""
+    Write-Host "  [LOG] Session terminee. Log sauvegarde : $_logFile" -ForegroundColor DarkCyan
+    Stop-Transcript | Out-Null
+    exit
+}
